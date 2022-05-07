@@ -2,11 +2,13 @@ import json
 import pytest
 import os
 import shutil
+import asyncio
 
 from mlserver.handlers import DataPlane, ModelRepositoryHandlers
 from mlserver.registry import MultiModelRegistry
 from mlserver.repository import ModelRepository, DEFAULT_MODEL_SETTINGS_FILENAME
 from mlserver.parallel import InferencePool
+from mlserver.utils import install_uvloop_event_loop
 from mlserver import types, Settings, ModelSettings
 
 from .fixtures import SumModel, ErrorModel
@@ -14,6 +16,15 @@ from .helpers import get_import_path
 
 TESTS_PATH = os.path.dirname(__file__)
 TESTDATA_PATH = os.path.join(TESTS_PATH, "testdata")
+
+
+@pytest.fixture
+def event_loop():
+    # By default use uvloop for tests
+    install_uvloop_event_loop()
+    loop = asyncio.get_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest.fixture
