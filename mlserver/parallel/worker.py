@@ -12,6 +12,8 @@ from .messages import ModelUpdateType, ModelUpdateMessage, InferenceResponseMess
 from .utils import terminate_queue, END_OF_QUEUE
 from .logging import logger
 
+READ_ONLY = select.POLLIN | select.POLLPRI | select.POLLHUP | select.POLLERR
+POLLER_TIMEOUT_MS = 1000
 
 class Worker(Process):
     def __init__(self, requests: Queue, responses: Queue):
@@ -21,6 +23,7 @@ class Worker(Process):
         self.model_updates: JoinableQueue[ModelUpdateMessage] = JoinableQueue()
 
         self.__executor = None
+        self._poller = None
 
     @property
     def _executor(self):
@@ -43,18 +46,20 @@ class Worker(Process):
         Internal __init__ method that needs to run within the worker process.
         """
         self._model_registry = MultiModelRegistry()
+        self._poller = select.poll()
+        self._poller.register(self._requests._reader, READ_ONLY)
+        self._poller.register(self.model_updates._reader, READ_ONLY)
+        self._fd_to_queue = { self._requests._reader.fileno(): self._requests._reader,
+                              self.model_updates._reader.fileno(): self.model_updates._reader }
         self._active = True
 
     async def coro_run(self):
         self.__inner_init__()
 
         while self._active:
-            readable, _, _ = select.select(
-                [self._requests._reader, self.model_updates._reader],
-                [],
-                [],
-            )
-            for r in readable:
+            events = self._poller.poll(POLLER_TIMEOUT_MS)
+            for fd, _ in events:
+                r = self._fd_to_queue[fd]
                 if r is self._requests._reader:
                     try:
                         # NOTE: `select.select` will notify all workers when a
@@ -124,6 +129,8 @@ class Worker(Process):
         Note that this method should be both multiprocess- and thread-safe.
         """
         loop = asyncio.get_event_loop()
+        self._poller.unregister(self._requests._reader)
+        self._poller.unregister(self.model_updates._reader)
         await terminate_queue(self.model_updates)
         await loop.run_in_executor(self._executor, self.model_updates.join)
         self.model_updates.close()
